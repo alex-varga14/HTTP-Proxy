@@ -14,9 +14,8 @@
 #include <time.h>
 
 /* Global manifest constants */
-#define MAX_MESSAGE_LENGTH 1024
+#define MAX_MESSAGE_SIZE 1024
 #define MAX_USERS 100
-#define PORT 80
 
 #define MAX(a,b)((a>b)?a:b)
 #define MIN(a,b)((a<b)?a:b)
@@ -63,352 +62,381 @@ char* parseHost(char* request);
 int actualLength(char* content_length);
 void startProxy(struct sockaddr_in *address, int *prox_socket, int port);
 
-			
-int main(int argc, char *argv[])
-{
-	// address_server init variables
-    struct sockaddr_in server_address;
-	//struct sockaddr_in client_address;
-    uint16_t port;
-	// socket vars
-    int server_socket;
-	int accept_socket;
-    int client_socket;
-	char* messageIn;
-	char* messageout;
-	char* GET_req;
-	char* host;
-	char* header;
-	
-	
-	struct addrinfo client_address;
-	struct addrinfo *res;
-	struct addrinfo *tmp;
-	int addr_status;
-	
-	int msg_length;
-	int bytes_sent;
-	int bytes_rcvd;
-	
-	int conn_status;
-	
-	//send vars
-	char* content_type;
+// Global Variables:
+int server_socket, conn_socket, client_socket;
+uint16_t port;
+char clown_jpg[] = "GET http://pages.cpsc.ucalgary.ca/~carey/CPSC441/ass1/clown1.png HTTP/1.1";
+
+struct clientRequestInfo {
+	char* protocol;
+    char* content_type;
     char* content_length;
-    char* sent_protocol;
+	int body_size;
     char* modified;
-    char* send_ptr;
-    int body_length;
+    char* dest;
+};
+
+struct parsedRequest 
+{
+	char *receive_ptr;
+    char *GET_request;
+    char *header;
+    char *host;
+    char* end_of_line;
+    int msg_length;
+};
 	
+	
+int main (int argc, char *argv[]){
+
+    // address_server init variables
+    struct sockaddr_in server_address;
+	char client_request[MAX_MESSAGE_SIZE];
+	char server_request[MAX_MESSAGE_SIZE];
+	
+	struct clientRequestInfo reqInfo;
+	struct parsedRequest parsedRed;
+	
+
+    //client proxy variables
+    struct addrinfo hints;
+    struct addrinfo *res;
+    struct addrinfo *attempt_connect;
 	
 	//check for valid input of the form:
 	// ./clownproxy <PORT#>
-	// if(argc != 2)
-	// {
-		// fprintf(stderr, "ERROR: Clown Proxy needs a Port Number!\n");
-		// exit(1);
-	// }
-	port = 6666;
-	startProxy(&server_address, &server_socket, port);
-	/*
-	memset(&server_address, 0, sizeof(&server_address)); 
-    server_address.sin_family = AF_INET; 
-    server_address.sin_port = htons(PORT);
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY); //IADDR_ANY to local IP
-	
-	// Create client socket, check for errors 
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    printf("Socket %d Created\n", server_socket);
-    if (server_socket < 0)
+	if(argc != 2)
 	{
-       fprintf(stderr, "ERROR: Socket() call failed!\n");
-       exit(1);
-    } */
-	
-	/* Binding Sockets on Server Side */
+		fprintf(stderr, "ERROR: Clown Proxy needs a Port Number!\n");
+		exit(1);
+	}
+	port = atoi(argv[1]);
+    startProxy(&server_address, &server_socket, port);
+
+  
     if (bind(server_socket, (struct sockaddr *) &server_address, sizeof(struct sockaddr_in)) == -1){
         close(server_socket);
         fprintf(stderr, "ERROR: Bind() call failed!\n");
         exit(1);
     }
-	//listen on socket
-	if(listen(server_socket, MAX_USERS) == -1 ) 
+
+    /* Listening/Accept/Main Loop */
+    for( ; ; )
 	{
-		fprintf(stderr, "ERROR: Listen() call failed!\n");
-		exit(1);
-	}
-	//listen for requests
-	
-	socklen_t client_address_size = sizeof(client_address);
-	
-	for( ; ;)
-	{
-		//not sure of secondary parameters
-		client_socket = accept(server_socket, NULL, NULL);
-		//client_socket = accept(server_socket, &client_address, &client_address_size);
-		if(client_socket == -1 ) // up to 100 participants can connect
-		{
-			close(server_socket);
-			fprintf(stderr, "ERROR: Listen() call failed!\n");
+        if (listen(server_socket, 100) == -1){
+            close(server_socket);
+            fprintf(stderr, "ERROR: Listen() call failed!\n");
 			exit(1);
-		}
-		
-		// int pid = fork();
-		
-		//receiver browser message
-		// if(pid == 0)
-		// {
-			// clientData((void*)&client_socket);
-			// close(client_socket);
-			// exit(0);
-		// }
-		// else
-			// close(client_socket);
-		
-		// receive GET request
-		messageIn = (char*)malloc(1000 * sizeof(char));
-		memset(messageIn, 0, 1000);
-		if(recv(client_socket, messageIn, sizeof(messageIn) * 1000, 0) == -1)
-		{
-			close(server_socket);
-			close(client_socket);
-			fprintf(stderr, "ERROR: recv() call 1 failed!\n");
+        }
+
+        /* accept connection */
+        conn_socket = accept(server_socket, NULL, NULL);
+        if (conn_socket == -1){
+            close(server_socket);
+            fprintf(stderr, "ERROR: accept() call failed!\n");
 			exit(1);
-		}
-		
-		//parse GET request
-		GET_req = (char*) malloc(4000 * sizeof(char));
-		memset(GET_req, 0, 4000);
-		host = (char*) malloc(100 * sizeof(char));
-		memset(host, 0, 100);
-		
-		// Only accept requests in the form of GET
-		header = strstr(messageIn, "GET");
-		if(header == NULL)
-		{
-			close(server_socket);
-			close(client_socket);
-			fprintf(stderr, "ERROR: HTTP method invalid!\n");
+        }
+
+        printf("accepted connection\n");
+
+        /* Receive GET request */
+        parsedRed.receive_ptr = (char*)malloc(1000 * sizeof(char));
+        memset(parsedRed.receive_ptr, 0, 1000);
+        if (recv(conn_socket, parsedRed.receive_ptr, sizeof(char) * 1000, 0) == -1){
+            close(server_socket);
+            close(conn_socket);
+            fprintf(stderr, "ERROR: recv() call 1 failed!\n");
 			exit(1);
-		}
-		
-		host = parseHost(messageIn);
-		
-		/* make sure we haven't loaded the page recently */
+        }
+
+        printf("recieved something........ standby\n");
+        printf("message received:\n%s", parsedRed.receive_ptr);
+
+        /* Parse GET Request */
+        parsedRed.GET_request = (char*)malloc(4000 * sizeof(char));
+        memset(parsedRed.GET_request, 0, 4000);
+        parsedRed.host = (char*)malloc(100 * sizeof(char));
+        memset(parsedRed.host, 0, 100);
+
+        // Only Accept requests in the form of "GET"
+       parsedRed. header = strstr(parsedRed.receive_ptr, "GET");
+        if (parsedRed.header == NULL){
+            close(server_socket);
+            close(conn_socket);
+            fprintf(stderr, "ERROR: HTTP method invalid!\n");
+			exit(1);
+        }
+
+        parsedRed.host = parseHost(parsedRed.receive_ptr);
+
+        /* make sure we haven't loaded the page recently */
         char* range;
-        modified = NULL; 
+        reqInfo.modified = NULL; 
         range = NULL;
-        modified = strstr(messageIn, "If-Modified-Since: ");
-        range = strstr(messageIn, "Range: ");
-        if (modified != NULL){
-            strncpy(GET_req, messageIn, (modified - messageIn));
-            modified = strstr(modified, "If-None-Match: ");
-            modified = strchr(modified, '\n') + 1;
-            strcat(GET_req, modified);
+        reqInfo.modified = strstr(parsedRed.receive_ptr, "If-Modified-Since: ");
+        range = strstr(parsedRed.receive_ptr, "Range: ");
+        if (reqInfo.modified != NULL){
+            strncpy(parsedRed.GET_request, parsedRed.receive_ptr, (reqInfo.modified - parsedRed.receive_ptr));
+            reqInfo.modified = strstr(reqInfo.modified, "If-None-Match: ");
+            reqInfo.modified = strchr(reqInfo.modified, '\n') + 1;
+            strcat(parsedRed.GET_request, reqInfo.modified);
         }
         else if (range != NULL){
-            strncpy(GET_req, messageIn, (range - messageIn));
+            strncpy(parsedRed.GET_request, parsedRed.receive_ptr, (range - parsedRed.receive_ptr));
             range = strstr(range, "If-Range: ");
             range = strchr(range, '\n') + 1;
-            strcat(GET_req, range);
+            strcat(parsedRed.GET_request, range);
         }
         else{
-            strcpy(GET_req, messageIn);
+            strcpy(parsedRed.GET_request, parsedRed.receive_ptr);
         }
-        GET_req[strlen(GET_req)] = '\0';
+        parsedRed.GET_request[strlen(parsedRed.GET_request)] = '\0';
 
-        printf("\n%s\n", GET_req);
+        printf("\n%s\n", parsedRed.GET_request);
 
         // don't need receive pointer anymore
-        free(messageIn);  
-        messageIn = NULL;
+        free(parsedRed.receive_ptr);  
+        parsedRed.receive_ptr = NULL;
 
         /* Pass to client side */
-        memset(&client_address, 0, sizeof(client_address));
-        client_address.ai_family = AF_INET;
-        client_address.ai_socktype = SOCK_STREAM;
-        client_address.ai_flags = AI_PASSIVE;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE;
 
-        addr_status = getaddrinfo(host, "http", &client_address, &res);
-        if (addr_status != 0){
+
+        if ((getaddrinfo(parsedRed.host, "http", &hints, &res) != 0)){
             close(server_socket);
-            close(client_socket);
-            printf("get addr error: %s\n", gai_strerror(addr_status));
+            close(conn_socket);
+            printf("get addr error: \n", getaddrinfo(parsedRed.host, "http", &hints, &res));
             exit(1);
         }
         printf("got address info\n");
 
         /* Connection Request */
         // loop through results and connect to the first socket we can
-        tmp = res;
-        for (tmp = res; tmp != NULL; tmp = tmp->ai_next){
-            if ((accept_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == -1){
+        attempt_connect = res;
+        for (attempt_connect = res; attempt_connect != NULL; attempt_connect = attempt_connect->ai_next){
+            if ((client_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == -1){
                 printf("client: socket\n");
                 continue;
             }
-            if ((conn_status = connect(accept_socket, res->ai_addr, res->ai_addrlen)) == -1){
-                close(accept_socket);
+            if ((connect(client_socket, res->ai_addr, res->ai_addrlen)) == -1){
+                close(client_socket);
                 printf("client: connect\n");
                 continue;
             }
             break;
         }
 
-        if (tmp == NULL){
+        if (attempt_connect == NULL){
             close(server_socket);
-            close(client_socket);
-            printf("get addr error: %s\n", gai_strerror(addr_status));
-            exit(1);
+            close(conn_socket);
+            fprintf(stderr, "ERROR: socket() call failed!\n");
+			exit(1);
         }
-		printf("connected\n");
+
+        printf("connected\n");
 
         /* Send GET */
-        msg_length = strlen(GET_req);
-        bytes_sent = send(accept_socket, GET_req, msg_length, 0);
-        if (bytes_sent == -1){
+        parsedRed.msg_length = strlen(parsedRed.GET_request);
+        if (send(client_socket, parsedRed.GET_request, parsedRed.msg_length, 0) == -1){
             close(server_socket);
-			close(client_socket);
-            close(accept_socket);
+            close(conn_socket);
+            close(client_socket);
             fprintf(stderr, "ERROR: send() call failed!\n");
 			exit(1);
         }
 
         /* Receive Response && Handle */
-        send_ptr = (char*)malloc(65535 * sizeof(char));
-        memset(send_ptr, 0, 65535);
-        messageIn = (char*)malloc(512 * sizeof(char)); // make sure this is big enough
-        memset(messageIn, 0, 512);
-        bytes_rcvd = recv(client_socket, messageIn, sizeof(char) * 512, 0);
-        if (bytes_rcvd == -1){
+        reqInfo.dest = (char*)malloc(65535 * sizeof(char));
+        memset(reqInfo.dest, 0, 65535);
+        parsedRed.receive_ptr = (char*)malloc(512 * sizeof(char)); // make sure this is big enough
+        memset(parsedRed.receive_ptr, 0, 512);
+        if (recv(client_socket, parsedRed.receive_ptr, sizeof(char) * 512, 0) == -1){
             close(server_socket);
-            close(accept_socket);
+            close(conn_socket);
             close(client_socket);
             fprintf(stderr, "ERROR: recv() call 2 failed!\n");
 			exit(1);
         }
 
         printf("recieved something........ standby\n");
-        printf("message received:\n%s", messageIn);
+        printf("message received:\n%s", parsedRed.receive_ptr);
 
         /* Parse response and insert errors */
         char* end_of_response = NULL;
         int sanity = 0;
-        content_type = NULL;
-        content_length = NULL;
+        reqInfo.content_type = NULL;
+        reqInfo.content_length = NULL;
 
-        sent_protocol = strstr(messageIn, "HTTP");
-        content_type = strstr(messageIn, "Content-Type: ");
-        content_length = strstr(messageIn, "Content-Length: ");
-        body_length = actualLength(content_length);
-        end_of_response = strstr(messageIn, "\r\n\r\n") + 4;
-        sanity = (end_of_response - messageIn);
-        strncpy(send_ptr, messageIn, sanity);
-		 printf("message received222222222:\n%s", messageIn);
-        if(strstr(sent_protocol, "404 Not Found") == NULL){
-            if(strstr(content_type, "image") == NULL){
-                strcat(send_ptr, end_of_response);
-                body_length -= strlen(messageIn);
-                body_length += sanity;
+        reqInfo.protocol = strstr(parsedRed.receive_ptr, "HTTP");
+        reqInfo.content_type = strstr(parsedRed.receive_ptr, "Content-Type: ");
+        reqInfo.content_length = strstr(parsedRed.receive_ptr, "Content-Length: ");
+        reqInfo.body_size = actualLength(reqInfo.content_length);
+        end_of_response = strstr(parsedRed.receive_ptr, "\r\n\r\n") + 4;
+        sanity = (end_of_response - parsedRed.receive_ptr);
+        strncpy(reqInfo.dest, parsedRed.receive_ptr, sanity);
+        if(strstr(reqInfo.protocol, "404 Not Found") == NULL){
+            if(strstr(reqInfo.content_type, "image") == NULL){
+                strcat(reqInfo.dest, end_of_response);
+                reqInfo.body_size -= strlen(parsedRed.receive_ptr);
+                reqInfo.body_size += sanity;
                 
-                while (body_length > 0){
-                    bytes_rcvd = recv(accept_socket, messageIn, MIN((sizeof(char) * 512), body_length), 0);
-                    if (bytes_rcvd == -1){
-						close(client_socket);
+                while (reqInfo.body_size > 0){
+                    if (recv(client_socket, parsedRed.receive_ptr, MIN((sizeof(char) * 512), reqInfo.body_size), 0) == -1){
                         close(server_socket);
-                        close(accept_socket);
+                        close(conn_socket);
+                        close(client_socket);
                         fprintf(stderr, "ERROR: recv() call 3 failed!\n");
 						exit(1);
                     }
-                    strncat(send_ptr, messageIn, MIN((int)strlen(messageIn), body_length));
-                    body_length -= MIN((int)strlen(messageIn), body_length);
+                    strncat(reqInfo.dest, parsedRed.receive_ptr, MIN((int)strlen(parsedRed.receive_ptr), reqInfo.body_size));
+                    reqInfo.body_size -= MIN((int)strlen(parsedRed.receive_ptr), reqInfo.body_size);
                 }
 
 
                 /* Checking for html type */
-                if (strstr(content_type, "html") != NULL){
+                if (strstr(reqInfo.content_type, "html") != NULL){
                     printf("got into html\n");
                     // this function will add the errors
-                    handleHTML(send_ptr);
+                    handleHTML(reqInfo.dest);
                 } 
 
                 /* Check for Plain text type */
-                if (strstr(content_type, "plain") != NULL){
-                    handleText(send_ptr);
+                if (strstr(reqInfo.content_type, "plain") != NULL){
+                    handleText(reqInfo.dest);
                 }
             }
             else{
                 /* This is where images would be handled, but it is not working......... */
-                 memcpy(send_ptr + sanity, messageIn, 512 - sanity);
+                 memcpy(reqInfo.dest + sanity, parsedRed.receive_ptr, 512 - sanity);
                 sanity += (512 - sanity);
-                while (body_length > 0){
-                    bytes_rcvd = recv(accept_socket, messageIn, MIN(512, body_length), 0);
-                    if (bytes_rcvd == -1){
+                while (reqInfo.body_size > 0){
+
+                    if (recv(client_socket, parsedRed.receive_ptr, MIN(512, reqInfo.body_size), 0) == -1){
                         close(server_socket);
-                        close(accept_socket);
+                        close(conn_socket);
                         close(client_socket);
                         fprintf(stderr, "ERROR: recv() call 4 failed!\n");
 						exit(1);
                     }
-                    memcpy(send_ptr + sanity, messageIn, MIN(512, body_length));
-                    sanity += MIN(512, body_length);
-                    body_length -= MIN((int)strlen(messageIn), body_length);
+                    memcpy(reqInfo.dest + sanity, parsedRed.receive_ptr, MIN(512, reqInfo.body_size));
+                    sanity += MIN(512, reqInfo.body_size);
+                    reqInfo.body_size -= MIN((int)strlen(parsedRed.receive_ptr), reqInfo.body_size);
                 } 
 
             }
         }
 
-        printf("\n\nsending:\n%s\n", send_ptr);
+        printf("\n\nsending:\n%s\n", reqInfo.dest);
 
-        msg_length = strlen(send_ptr);
-        bytes_sent = send(client_socket, send_ptr, msg_length, 0);
-        if (bytes_sent == -1){
+        parsedRed.msg_length = strlen(reqInfo.dest);
+        if (send(conn_socket, reqInfo.dest, parsedRed.msg_length, 0) == -1){
             close(server_socket);
-			close(client_socket);
-            close(accept_socket);
+            close(conn_socket);
+            close(client_socket);
             fprintf(stderr, "ERROR: send() call failed!\n");
 			exit(1);
         }
 
         /* Close superfluous sockets */
-		   close(accept_socket);
         close(client_socket);
+        close(conn_socket);
 
 
         /* deallocate memory */
-        if (modified != NULL)
-            printf("%p: modified pointer\n", (void*)modified);{
+        if (reqInfo.modified != NULL)
+            printf("%p: modified pointer\n", (void*)reqInfo.modified);{
         }
-        printf("%p: receive pointer\n", (void*)messageIn);
-        free(messageIn);
-        messageIn = NULL;
-        printf("%p: GET pointer\n", (void*)GET_req);
-        strcpy(GET_req, "");
-        printf("%p: content pointer\n", (void*)content_type);
-        content_type = NULL;
-        printf("%p: length pointer\n", (void*)content_length);
-        content_length =NULL;
-        printf("%p: header pointer\n", (void*)header);
-        header = NULL;
-        printf("%p: host pointer\n", (void*)host);
-        free(host);
-	}
-	close(server_socket);
+        printf("%p: receive pointer\n", (void*)parsedRed.receive_ptr);
+        free(parsedRed.receive_ptr);
+        parsedRed.receive_ptr = NULL;
+		
+        printf("%p: GET pointer\n", (void*)parsedRed.GET_request);
+        strcpy(parsedRed.GET_request, "");
+        printf("%p: content pointer\n", (void*)reqInfo.content_type);
+        reqInfo.content_type = NULL;
+        printf("%p: length pointer\n", (void*)reqInfo.content_length);
+        reqInfo.content_length =NULL;
+        printf("%p: header pointer\n", (void*)parsedRed.header);
+        parsedRed.header = NULL;
+        printf("%p: host pointer\n", (void*)parsedRed.host);
+        free(parsedRed.host);
+    }
+
+    /* Terminate Connection */
+    close(server_socket);
+
+    return 0;
 }
 
-void startProxy(struct sockaddr_in *address, int *prox_socket, int port){
+void startProxy(struct sockaddr_in *address, int *sockfd, int port){
 
     memset(address, 0, sizeof(&address)); //initialize address_server to zero
     address->sin_family = AF_INET;  //AF_INET == IPv4 protocol
     address->sin_port = htons(port); //convert little endian to big endian
     address->sin_addr.s_addr = htonl(INADDR_ANY); //IADDR_ANY == any local IP
 
-    /* Create client socket, check for errors */
-    *prox_socket = socket(AF_INET, SOCK_STREAM, 0);
-    printf("socket %d opened\n", *prox_socket);
-    if (*prox_socket == -1){
-         fprintf(stderr, "ERROR: Socket() call failed!\n");
+    *sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    printf("socket %d opened\n", *sockfd);
+    if (*sockfd < 0){
+         fprintf(stderr, "ERROR: socket() call failed!\n");
 		 exit(1);
     }
+}
+
+char* parseHost(char* request){
+    // create pass back variable
+    char* host;
+
+    // create helper vars
+    char* GET_line;
+    char* after_host;
+    char* second_line;
+
+    /* Find the Host: name */
+    GET_line = strchr(request, '\n');
+    after_host = strchr(GET_line, ' ') + 1;
+    second_line = strchr(GET_line, 13); // carriage return == 13
+
+    // allocate memory for the host
+    host = (char*)malloc((second_line - after_host) * sizeof(char));
+
+    // copy everythinginto the return
+    strncpy(host, after_host, (second_line - after_host));
+
+    // add NULL terminator
+    host[strlen(host)] = '\0';
+
+    return host;
+}
+
+int actualLength(char* content_length){
+
+    // create pass back
+    int actual;
+
+    // helper variables
+    char* start;
+    char* end;
+    char* length;
+
+    // find the ' ' and the CR
+    start = strchr(content_length, ' ') + 1;
+    end = strchr(content_length, '\r');
+
+    // allocate
+    length = (char*)malloc((end - start)*sizeof(char));
+
+    // copy the line
+    strncpy(length, start, (end - start));
+
+    // add NULL terminator
+    actual = atoi(length);
+
+    return(actual);
+
 }
 
 void handleText(char* resp)
@@ -500,64 +528,3 @@ void handleHTML(char* resp)
 		}
 	}
 }
-
-char* parseHost(char* request){
-    // create pass back variable
-    char* host;
-
-    // create helper vars
-    char* GET_line;
-    char* after_host;
-    char* second_line;
-
-    /* Find the Host: name */
-    GET_line = strchr(request, '\n');
-    after_host = strchr(GET_line, ' ') + 1;
-    second_line = strchr(GET_line, 13); // carriage return == 13
-
-    // allocate memory for the host
-    host = (char*)malloc((second_line - after_host) * sizeof(char));
-
-    // copy everythinginto the return
-    strncpy(host, after_host, (second_line - after_host));
-
-    // add NULL terminator
-    host[strlen(host)] = '\0';
-
-    return host;
-}
-
-int actualLength(char* content_length){
-
-    // create pass back
-    int actual;
-
-    // helper variables
-    char* start;
-    char* end;
-    char* length;
-
-    // find the ' ' and the CR
-    start = strchr(content_length, ' ') + 1;
-    end = strchr(content_length, '\r');
-
-    // allocate
-    length = (char*)malloc((end - start)*sizeof(char));
-
-    // copy the line
-    strncpy(length, start, (end - start));
-
-    // add NULL terminator
-    actual = atoi(length);
-
-    return(actual);
-
-}
-
-
-			
-		
-		
-		
-		
-		
