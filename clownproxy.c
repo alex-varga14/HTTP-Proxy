@@ -11,60 +11,46 @@
 #include <sys/socket.h>
 #include <signal.h>
 #include <netdb.h>
-#include <time.h>
 
 /* Global manifest constants */
 #define MAX_MESSAGE_SIZE 1024
 #define MAX_USERS 100
 
-#define MAX(a,b)((a>b)?a:b)
-#define MIN(a,b)((a<b)?a:b)
-
 void handleText(char* resp);
 void handleHTML(char* resp);
-char* parseHost(char* request);
-int actualLength(char* content_length);
+void handleJPG(char * resp);
 
 // Global Variables:
 int server_socket, conn_socket, client_socket;
 uint16_t port;
 char clown_jpg[] = "GET http://pages.cpsc.ucalgary.ca/~carey/CPSC441/ass1/clown1.png HTTP/1.1";
+char clown_jpgg[] = "http://pages.cpsc.ucalgary.ca/~carey/CPSC441/ass1/clown1.png";
+char clown_jpgg2[] = "http://pages.cpsc.ucalgary.ca/~carey/CPSC441/ass1/clown1.png\" width=\"200\" height=\"300\">\r\n\n<p>\nYour Web browser should be able to display this page just fine,\n but the contents of the image might change when using the proxy.\n\n</p>\n\n</body>\n\n</html>";
 
-struct clientRequestInfo {
-	char* protocol;
-    char* content_type;
-    char* content_length;
-	int body_size;
-    char* modified;
-    char* dest;
-};
+char path[MAX_MESSAGE_SIZE];
 
-struct parsedRequest 
+int main(int argc, char *argv[])
 {
-	char *receive_ptr;
-    char *GET_request;
-    char *header;
-    char *host;
-    char* end_of_line;
-    int msg_length;
-};
-	
-int main (int argc, char *argv[]){
-
-    // address_server init variables
+	// address_server init variables
     struct sockaddr_in server_address;
-	char client_request[MAX_MESSAGE_SIZE];
-	char server_request[MAX_MESSAGE_SIZE];
+	char* client_request;
+	char* server_request;
+	char url[MAX_MESSAGE_SIZE];
 	
-	// structs to hold request and response data
-	struct clientRequestInfo reqInfo;
-	struct parsedRequest parsedRed;
+	int flag = 0;
+	//HTTP header vars
+	char* host;
+	char* header;
+	char* content_type;
+    char* content_length;
+	char* sent_protocol;
+	int body_length;
 	
-
-    //client proxy variables
-    struct addrinfo hints;
-    struct addrinfo *res;
-    struct addrinfo *attempt_connect;
+	//web socket vars
+	struct addrinfo client_address;
+	struct addrinfo *res;
+	struct addrinfo *tmp;
+	int addr_status;
 	
 	//check for valid input of the form:
 	// ./clownproxy <PORT#>
@@ -74,15 +60,13 @@ int main (int argc, char *argv[]){
 		exit(1);
 	}
 	// Initialize server sockaddr structure
-	memset(&server_address, 0, sizeof(&server_address)); 
 	port = atoi(argv[1]);
+	memset(&server_address, 0, sizeof(&server_address)); 
     server_address.sin_family = AF_INET; 
     server_address.sin_port = htons(port);
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY); //IADDR_ANY to local IP
-
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY);//local IP
     //create server socket 
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    printf("Socket %d Created\n", server_socket);
     if (server_socket < 0)
 	{
        fprintf(stderr, "ERROR: Socket() call failed!\n");
@@ -90,300 +74,213 @@ int main (int argc, char *argv[]){
     }
 	//bind specific address and port to the end point
     if (bind(server_socket, (struct sockaddr *) &server_address, sizeof(struct sockaddr_in)) == -1){
-        close(server_socket);
         fprintf(stderr, "ERROR: Bind() call failed!\n");
         exit(1);
     }
-
+	// start listenting for connections from clients
+	if(listen(server_socket, 100) == -1 ) // up to 100 participants can connect
+	{
+		fprintf(stderr, "ERROR: Listen() call failed!\n");
+		exit(1);
+	}
 	// listen forever
     for( ; ; )
 	{
-		// start listenting for connections from clients
-        if (listen(server_socket, 100) == -1){
-            close(server_socket);
-            fprintf(stderr, "ERROR: Listen() call failed!\n");
-			exit(1);
-        }
-
 		// accept a connection
         conn_socket = accept(server_socket, NULL, NULL);
         if (conn_socket == -1){
-            close(server_socket);
+            //close(server_socket);
             fprintf(stderr, "ERROR: accept() call failed!\n");
 			exit(1);
         }
-
-
-        parsedRed.receive_ptr = (char*)malloc(1000 * sizeof(char));
-        memset(parsedRed.receive_ptr, 0, 1000);
-        if (recv(conn_socket, parsedRed.receive_ptr, sizeof(char) * 1000, 0) == -1){
-            close(server_socket);
-            close(conn_socket);
+		//Allocate dynamic memory to heap for request
+		client_request =  (char*)malloc(MAX_MESSAGE_SIZE * sizeof(char));
+		memset(client_request, 0, MAX_MESSAGE_SIZE);
+		//Obtain the message from this client 
+		if (recv(conn_socket, client_request, sizeof(char) * MAX_MESSAGE_SIZE, 0) == -1){
             fprintf(stderr, "ERROR: recv() call 1 failed!\n");
 			exit(1);
         }
-
-
-        //begin parse of get request
-        parsedRed.GET_request = (char*)malloc(4000 * sizeof(char));
-        memset(parsedRed.GET_request, 0, 4000);
-        parsedRed.host = (char*)malloc(100 * sizeof(char));
-        memset(parsedRed.host, 0, 100);
-
-       parsedRed.header = strstr(parsedRed.receive_ptr, "GET");
-        if (parsedRed.header == NULL){
-            close(server_socket);
-            close(conn_socket);
-            fprintf(stderr, "ERROR: HTTP method invalid!\n");
-			exit(1);
-        }
 		
-
-        parsedRed.host = parseHost(parsedRed.receive_ptr);
+		host = (char*) malloc(MAX_MESSAGE_SIZE * sizeof(char));
+        memset(host, 0, MAX_MESSAGE_SIZE);
+		char cpy[MAX_MESSAGE_SIZE];
+		strcpy(cpy, client_request);
+		char* line = strtok(cpy, "\r\n");
+		header = strstr(client_request, "GET");
 		
-		printf("HEADER: %s\n", parsedRed.header);
-		printf("HOST: %s\n", parsedRed.host);
-		printf("RECEIVE: %s\n   NOOOB\n", parsedRed.receive_ptr);
+		//locate and replace the image
+		int len = strlen(line);
+		char* image = strstr(line, ".jpg");
+		printf("REQ 1: %s\n", client_request);
+		if(image != NULL)
+		{
+			strncpy(client_request, clown_jpg, len); //replace image with clown_jpg
+			strncpy(line, clown_jpg, len);
+			flag = 1;
+		}
+		else {
+			flag = 0;
+		}
+		
+		//establish URL
+		printf("HTTP request:%s\n", line);
+		sscanf(line, "GET http://%s", url);
+		//loop through the url to copy hostname
+		int index;
+		for(index = 0; index < strlen(url); index++)
+		{
+			if(url[index] == '/')
+			{
+				//printf("HOST\n");
+				strncpy(host, url, index); //copy hostname
+				host[index] = '\0'; //space at the end of host
+				break;
+			}
+		}
+		char re[MAX_MESSAGE_SIZE]={0};
+		sprintf(re,"%s\r\nHost: %s\r\nContent-Type: image/png\r\nConnection: keep-alive\r\n\r\n",line, host); 
+		
+		//establish path
+		memset(path, 0, MAX_MESSAGE_SIZE);
+		strcat(path, &url[index]);
+		printf("PATH: %s\n", path);
+		printf("URL: %s\n", url);
+		server_request = (char*) malloc(MAX_MESSAGE_SIZE * sizeof(char));
+		memset(server_request, 0, MAX_MESSAGE_SIZE);
+		// Initialize sockaddr structure
+        memset(&client_address, 0, sizeof(client_address));
+        client_address.ai_family = AF_INET;
+        client_address.ai_socktype = SOCK_STREAM;
+        client_address.ai_flags = AI_PASSIVE;
 
-        
-        char* range;
-        reqInfo.modified = NULL; 
-        range = NULL;
-        reqInfo.modified = strstr(parsedRed.receive_ptr, "If-Modified-Since: ");
-        range = strstr(parsedRed.receive_ptr, "Range: ");
-        if (reqInfo.modified != NULL){
-            strncpy(parsedRed.GET_request, parsedRed.receive_ptr, (reqInfo.modified - parsedRed.receive_ptr));
-            reqInfo.modified = strstr(reqInfo.modified, "If-None-Match: ");
-            reqInfo.modified = strchr(reqInfo.modified, '\n') + 1;
-            strcat(parsedRed.GET_request, reqInfo.modified);
-        }
-        else if (range != NULL){
-            strncpy(parsedRed.GET_request, parsedRed.receive_ptr, (range - parsedRed.receive_ptr));
-            range = strstr(range, "If-Range: ");
-            range = strchr(range, '\n') + 1;
-            strcat(parsedRed.GET_request, range);
-        }
-        else{
-            strcpy(parsedRed.GET_request, parsedRed.receive_ptr);
-        } 
-        parsedRed.GET_request[strlen(parsedRed.GET_request)] = '\0';
-
-       // printf("\n%s\n", parsedRed.GET_request);
-
-        // don't need receive pointer anymore
-        free(parsedRed.receive_ptr);  
-        parsedRed.receive_ptr = NULL;
-
-        /* Pass to client side */
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_flags = AI_PASSIVE;
-
-
-        if ((getaddrinfo(parsedRed.host, "http", &hints, &res) != 0)){
-            close(server_socket);
-            close(conn_socket);
-            printf("get addr error: \n", getaddrinfo(parsedRed.host, "http", &hints, &res));
+		//get address info for host
+        if (getaddrinfo(host, "http", &client_address, &res) != 0){
+            fprintf(stderr, "ERROR: could not read host info!\n");
             exit(1);
         }
-        //printf("got address info\n");
-
-		 if ((client_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == -1){
-                printf("client: socket\n");
-                continue;
-            }
-            if ((connect(client_socket, res->ai_addr, res->ai_addrlen)) == -1){
-                close(client_socket);
-                printf("client: connect\n");
-                continue;
-            }
-
-        //printf("connected\n");
-		
-		printf("GETERRR: %s\n", parsedRed.GET_request);
-
-        // send GET request
-        if (send(client_socket, parsedRed.GET_request, strlen(parsedRed.GET_request), 0) == -1){
-            close(server_socket);
-            close(conn_socket);
-            close(client_socket);
-            fprintf(stderr, "ERROR: send() call failed!\n");
-			exit(1);
+		//TCP socket for connection to web server
+        if ((client_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == -1){
+                fprintf(stderr, "ERROR: Socket() call failed!\n");
+		   exit(1);
         }
-
-        //receive response
-        reqInfo.dest = (char*)malloc(65535 * sizeof(char));
-        memset(reqInfo.dest, 0, 65535);
-        parsedRed.receive_ptr = (char*)malloc(512 * sizeof(char)); // make sure this is big enough
-		printf("RECEIVE 2: %s\n", parsedRed.receive_ptr);
-        memset(parsedRed.receive_ptr, 0, 512);
-		printf("RECEIVE 3: %s\n", parsedRed.receive_ptr);
-		printf("ClientReq: %s\n", parsedRed.receive_ptr);
-        if (recv(client_socket, parsedRed.receive_ptr, sizeof(char) * 512, 0) == -1){
-            close(server_socket);
-            close(conn_socket);
-            close(client_socket);
-            fprintf(stderr, "ERROR: recv() call 2 failed!\n");
+		//connect to server-side socket 
+		if ((connect(client_socket, res->ai_addr, res->ai_addrlen)) == -1){
+			fprintf(stderr, "ERROR: connect() call failed!\n");
 			exit(1);
-        }
+		} 
+		printf("REQ 2: %s\n", client_request);
+		//Send out message
+		if(flag == 1)
+		{
+			if(send(client_socket, re, strlen(re), 0) == -1)
+			{
+				fprintf(stderr, "ERROR: send() call failed!\n");
+				exit(1);
+			}
+		}
+		else {
+			if(send(client_socket, client_request, strlen(client_request), 0) == -1)
+			{
+				fprintf(stderr, "ERROR: send() call failed!\n");
+				exit(1);
+			}
+		}
+		char* w_message_in = (char*) malloc(MAX_MESSAGE_SIZE * sizeof(char));
+		memset(w_message_in, 0, MAX_MESSAGE_SIZE);
+		//receive HTTP reponse from server
+		if(recv(client_socket, w_message_in, sizeof(char) * MAX_MESSAGE_SIZE, 0) == -1)
+		{
+			fprintf(stderr, "ERROR: recv() call 1 failed!\n");
+			exit(1);
+		}
 		
-		printf("RECEIVE 4: %s\n", parsedRed.receive_ptr);
-		
-
-        //printf("recieved something........ standby\n");
-        //printf("message received:\n%s", parsedRed.receive_ptr);
-
-        /* Parse response and insert errors */
-        char* end_of_response = NULL;
+		char* end_of_response = NULL;
         int sanity = 0;
-        reqInfo.content_type = NULL;
-        reqInfo.content_length = NULL;
-
-        reqInfo.protocol = strstr(parsedRed.receive_ptr, "HTTP");
-		printf("PROTOCOL: %s\n",  reqInfo.protocol);
-        reqInfo.content_type = strstr(parsedRed.receive_ptr, "Content-Type: ");
-		printf("CONTENT: %s\n",  reqInfo.content_type);
-        reqInfo.content_length = strstr(parsedRed.receive_ptr, "Content-Length: ");
-		printf("CONTENT Length: %s\n",  reqInfo.content_length);
-        reqInfo.body_size = actualLength(reqInfo.content_length);
-		printf("BODY SIZE: %d\n",  reqInfo.body_size);
-        end_of_response = strstr(parsedRed.receive_ptr, "\r\n\r\n") + 4;
-		printf("END OF RESPONSE: %s\n",  end_of_response);
-        sanity = (end_of_response - parsedRed.receive_ptr);
-		printf("SANITY: %d\n",  sanity);
-        strncpy(reqInfo.dest, parsedRed.receive_ptr, sanity);
-		printf("DEST: %d\n",  sanity);
-        if(strstr(reqInfo.protocol, "404 Not Found") == NULL){
-            if(strstr(reqInfo.content_type, "image") == NULL){
-                strcat(reqInfo.dest, end_of_response);
-                reqInfo.body_size -= strlen(parsedRed.receive_ptr);
-                reqInfo.body_size += sanity;
-                
-                while (reqInfo.body_size > 0){
-                    if (recv(client_socket, parsedRed.receive_ptr, MIN((sizeof(char) * 512), reqInfo.body_size), 0) == -1){
-                        close(server_socket);
-                        close(conn_socket);
-                        close(client_socket);
-                        fprintf(stderr, "ERROR: recv() call 3 failed!\n");
-						exit(1);
-                    }
-                    strncat(reqInfo.dest, parsedRed.receive_ptr, MIN((int)strlen(parsedRed.receive_ptr), reqInfo.body_size));
-                    reqInfo.body_size -= MIN((int)strlen(parsedRed.receive_ptr), reqInfo.body_size);
-                }
-                //html
-                if (strstr(reqInfo.content_type, "html") != NULL)
-                    handleHTML(reqInfo.dest);
-                //plain text
-                if (strstr(reqInfo.content_type, "plain") != NULL)
-                    handleText(reqInfo.dest);
-            }
-        }
-
-        if (send(conn_socket, reqInfo.dest, strlen(reqInfo.dest), 0) == -1){
-            close(server_socket);
-            close(conn_socket);
-            close(client_socket);
-            fprintf(stderr, "ERROR: send() call failed!\n");
-			exit(1);
-        }
-
-        close(client_socket);
-        close(conn_socket);
-
-
-		//deallocate all memory
-        if (reqInfo.modified != NULL)
-            printf("%p: modified pointer\n", (void*)reqInfo.modified);{
-        }
-        printf("%p: receive pointer\n", (void*)parsedRed.receive_ptr);
-        free(parsedRed.receive_ptr);
-        parsedRed.receive_ptr = NULL;
+        content_type = NULL;
+        content_length = NULL;
+        sent_protocol = strstr(w_message_in, "HTTP");
+        content_type = strstr(w_message_in, "Content-Type: ");
+		printf("CONTENT: %s\n", content_type);
+		content_length = strstr(w_message_in, "Content-Length: ");
+		// char* img = strstr(content_type, ".jpg");
+		// if(img != NULL)
+		// {
+			// char* cont = strstr(content_type, "Your");
+			// char* imgs = strstr(content_type, "http://");
+			// strncpy(imgs, clown_jpgg, strlen(clown_jpgg));
+			// char* aa = strstr(imgs, "t=\"");
+			// strncpy((aa+3), clown_jpgg2, strlen(clown_jpgg2));
+			// for(int i = 0; i <= strlen(content_length); i++)
+			// {
+				// imgs++;
+			// }
+		// }
+        end_of_response = strstr(w_message_in, "\r\n\r\n") + 4;
+        sanity = (end_of_response - w_message_in);
+        strncpy(server_request, w_message_in, sanity);
+        if(strstr(sent_protocol, "404 Not Found") == NULL){
+			if(strstr(content_type, "image") == NULL)
+			{
+				strcat(server_request, end_of_response);
+				if (strstr(content_type, "html") != NULL){
+					handleHTML(server_request);
+				} 
+				
+				if (strstr(content_type, "plain") != NULL){
+					handleText(server_request);
+				}
+			}
+		}
+		printf("SERV REQ: %s\n", server_request);
 		
-        printf("%p: GET pointer\n", (void*)parsedRed.GET_request);
-        strcpy(parsedRed.GET_request, "");
-        printf("%p: content pointer\n", (void*)reqInfo.content_type);
-        reqInfo.content_type = NULL;
-        printf("%p: length pointer\n", (void*)reqInfo.content_length);
-        reqInfo.content_length =NULL;
-        printf("%p: header pointer\n", (void*)parsedRed.header);
-        parsedRed.header = NULL;
-        printf("%p: host pointer\n", (void*)parsedRed.host);
-        free(parsedRed.host); 
-    }
+		//send reponse to web server
+		if(send(conn_socket, server_request, strlen(server_request), 0) == -1)
+		{
+			fprintf(stderr, "ERROR: send() call failed!\n");
+			exit(1);
+		}
+		// close all sockets except server-side socket
+		close(conn_socket);
+        close(client_socket);
 
-    /* Terminate Connection */
-    close(server_socket);
-
-    return 0;
+        // Destroy all memory allocated on heap
+		free(w_message_in);
+		free(server_request);
+		free(host);
+        w_message_in = NULL;
+        content_type = NULL;
+        content_length =NULL;
+        header = NULL;
+	}
+	close(server_socket);
 }
 
-char* parseHost(char* request){
-    // create pass back variable
-    char* host;
-
-    // create helper vars
-    char* GET_line;
-    char* after_host;
-    char* second_line;
-
-    /* Find the Host: name */
-    GET_line = strchr(request, '\n');
-    after_host = strchr(GET_line, ' ') + 1;
-    second_line = strchr(GET_line, 13); // carriage return == 13
-
-    // allocate memory for the host
-    host = (char*)malloc((second_line - after_host) * sizeof(char));
-
-    // copy everythinginto the return
-    strncpy(host, after_host, (second_line - after_host));
-
-    // add NULL terminator
-    host[strlen(host)] = '\0';
-
-    return host;
-}
-
-int actualLength(char* content_length){
-
-    // create pass back
-    int actual;
-
-    // helper variables
-    char* start;
-    char* end;
-    char* length;
-
-    // find the ' ' and the CR
-    start = strchr(content_length, ' ') + 1;
-    end = strchr(content_length, '\r');
-
-    // allocate
-    length = (char*)malloc((end - start)*sizeof(char));
-
-    // copy the line
-    strncpy(length, start, (end - start));
-
-    // add NULL terminator
-    actual = atoi(length);
-
-    return(actual);
-
+void handleJPG(char * resp)
+{
+	char* it = resp;
+	while(it != NULL)
+	{
+		char* r = strstr(resp, "Floppy Dog");
+		//replace all "Happy" with "Silly"
+		while(r != NULL)
+		{
+			//strncpy(r, clown_jpg, clown);
+			r = strstr(resp, "Floppy Dog");
+		}
+	}	
 }
 
 void handleText(char* resp)
 {
 	char* r = strstr(resp, "Happy");
-	
 	//replace all "Happy" with "Silly"
 	while(r != NULL)
 	{
 		strncpy(r, "Silly", 5);
 		r = strstr(resp, "Happy");
 	}
-	
 	r = strstr(resp, "happy");
-	
 	//replace all "happy" with "silly"
 	while(r != NULL)
 	{
@@ -398,36 +295,29 @@ void handleHTML(char* resp)
 	//parse through server HTTP response
 	while(it != NULL)
 	{
-		char* image = strstr(it, "<img src=\""); //next image tag
-		char* link = strstr(it, "<a href=\""); //next link tag
-		char* end = image; //end set to image
-		
+		char* img = strstr(it, "<img src=\""); //image tag
+		char* link = strstr(it, "<a href=\""); //link tag
+		char* end = img; //set end to image
 		//set end to link if link comes before image
-		if(link < image)
+		if(link < img)
 			end = link;
-		
-		// ensure end if not NULL unless link and image are NULL
-		if(link == NULL && image == NULL)
+		if(link == NULL && img == NULL)
 			end = NULL;
 		else if(link == NULL)
-			end = image;
+			end = img;
 		else
 			end = link;
-		
-		//last image found
+		//last image 
 		if(end == NULL)
 		{
 			char* r = strstr(resp, "Happy");
-			
 			//replace all "Happy" with "Silly"
 			while(r != NULL)
 			{
 				strncpy(r, "Silly", 5);
 				r = strstr(resp, "Happy");
 			}
-			
 			r = strstr(resp, "happy");
-			
 			//replace all "happy" with "silly"
 			while(r != NULL)
 			{
@@ -436,11 +326,10 @@ void handleHTML(char* resp)
 			}
 			break;
 		}
-		//more images in filelength
+		//more images
 		else
 		{
 			int l = strcspn(end, ">");
-			
 			//replace all occures (before image) of "Happy" with "Silly"
 			char* u_ptr = strstr(resp, "Happy");
 			while(u_ptr != NULL && it < end)
@@ -448,14 +337,12 @@ void handleHTML(char* resp)
 				strncpy(u_ptr, "Silly", 5);
 				u_ptr = strstr(resp, "Happy");
 			}
-			
 			char* l_ptr = strstr(resp, "happy");
 			while(l_ptr != NULL && it < end)
 			{
 				strncpy(l_ptr, "slly", 5);
 				l_ptr = strstr(resp, "happy");
 			}
-			
 			it = end + l;
 		}
 	}
